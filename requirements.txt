@@ -27,5 +27,6 @@ youtube-search
 youtube-search-python
 py-yt-search
 
-
+dotenv
 pyrogram 
+
