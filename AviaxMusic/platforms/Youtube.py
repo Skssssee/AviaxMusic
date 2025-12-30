@@ -9,11 +9,14 @@ from pyrogram.types import Message
 from youtubesearchpython.__future__ import VideosSearch, Playlist
 from AviaxMusic.utils.formatters import time_to_seconds
 
-# --- DOWNLOAD LOGIC ---
+# --- HELPER: API DOWNLOADER ---
 
 async def download_song(link: str):
-    """Uses your custom API to download the file"""
-    video_id = link.split('v=')[-1].split('/')[-1].split('?')[0]
+    """Downloads audio using your custom API"""
+    if "&" in link:
+        link = link.split("&")[0]
+    
+    video_id = link.split('v=')[-1].split('/')[-1]
     download_folder = "downloads"
     os.makedirs(download_folder, exist_ok=True)
     file_path = os.path.join(download_folder, f"{video_id}.mp3")
@@ -25,11 +28,9 @@ async def download_song(link: str):
     
     async with aiohttp.ClientSession() as session:
         try:
-            # Increased timeout to 60s because API might be slow
             async with session.get(api_url, timeout=60) as response:
                 if response.status != 200:
                     return None
-                
                 data = await response.json()
                 if data.get("status") == "success":
                     download_link = data.get("audio")
@@ -38,11 +39,11 @@ async def download_song(link: str):
                             async with aiofiles.open(file_path, mode='wb') as f:
                                 await f.write(await file_res.read())
                             return file_path
-        except Exception as e:
-            print(f"Download Error: {e}")
+        except Exception:
+            return None
     return None
 
-# --- MAIN CLASS ---
+# --- MAIN YOUTUBE CLASS ---
 
 class YouTubeAPI:
     def __init__(self):
@@ -50,17 +51,17 @@ class YouTubeAPI:
         self.regex = r"(?:youtube\.com|youtu\.be)"
         self.listbase = "https://youtube.com/playlist?list="
 
+    async def exists(self, link: str, videoid: Union[bool, str] = None):
+        if videoid: link = self.base + link
+        return bool(re.search(self.regex, link))
+
     async def url(self, message: Message) -> Union[str, None]:
-        """Improved URL extractor to handle all message types"""
         messages = [message]
         if message.reply_to_message:
             messages.append(message.reply_to_message)
-        
         for msg in messages:
             text = msg.text or msg.caption
-            if not text:
-                continue
-            # Check for text links (hyperlinks)
+            if not text: continue
             if msg.entities:
                 for entity in msg.entities:
                     if entity.type == MessageEntityType.URL:
@@ -70,37 +71,39 @@ class YouTubeAPI:
         return None
 
     async def details(self, link: str, videoid: Union[bool, str] = None):
-        """Fetches video metadata with error handling"""
-        if videoid:
-            link = self.base + link
-            
+        if videoid: link = self.base + link
         try:
             search = VideosSearch(link, limit=1)
-            result = await search.next()
-            
-            if not result or not result.get("result"):
-                # Return dummy data to prevent bot from crashing
-                # This allows the download() function to still try its luck
-                return "Unknown Title", "00:00", 0, "https://telegra.ph/file/default.jpg", "video_id"
-
-            res = result["result"][0]
-            title = res.get("title", "Music")
-            duration_min = res.get("duration", "0:00")
+            resp = await search.next()
+            res = resp["result"][0]
+            title = res["title"]
+            duration_min = res["duration"]
             thumbnail = res["thumbnails"][0]["url"].split("?")[0]
-            vidid = res.get("id")
-            
-            # Use 0 if time_to_seconds fails
-            try:
-                duration_sec = int(time_to_seconds(duration_min))
-            except:
-                duration_sec = 0
-                
+            vidid = res["id"]
+            duration_sec = int(time_to_seconds(duration_min)) if duration_min else 0
             return title, duration_min, duration_sec, thumbnail, vidid
-            
-        except Exception as e:
-            print(f"Details Error: {e}")
-            # Fallback data so the process doesn't stop
-            return "YouTube Audio", "00:00", 0, "https://telegra.ph/file/default.jpg", "id"
+        except:
+            # Fallback data to prevent "Failed to Process Query"
+            vid_id = link.split('v=')[-1].split('/')[-1].split('?')[0]
+            return "YouTube Audio", "04:00", 240, "https://telegra.ph/file/default.jpg", vid_id
+
+    async def playlist(self, link, limit, user_id, videoid: Union[bool, str] = None):
+        if videoid: link = self.listbase + link
+        try:
+            plist = Playlist(link)
+            while plist.hasMoreVideos:
+                await plist.getNextVideos()
+                if len(plist.videos) >= limit: break
+            return [v['id'] for v in plist.videos[:limit]]
+        except:
+            return []
+
+    async def slider(self, link: str, query_type: int, videoid: Union[bool, str] = None):
+        if videoid: link = self.base + link
+        a = VideosSearch(link, limit=10)
+        result = (await a.next()).get("result")
+        res = result[query_type]
+        return res["title"], res["duration"], res["thumbnails"][0]["url"].split("?")[0], res["id"]
 
     async def download(
         self,
@@ -113,16 +116,14 @@ class YouTubeAPI:
         format_id: Union[bool, str] = None,
         title: Union[bool, str] = None,
     ) -> str:
-        if videoid:
-            link = self.base + link
-
-        if songaudio or songvideo or video:
-            await mystic.edit_text("🔄 **Processing via Private API...**")
-            file_path = await download_song(link)
-            if file_path:
-                return file_path
-            else:
-                await mystic.edit_text("❌ **API Failed to provide file.**")
-                return None
+        if videoid: link = self.base + link
+        
+        await mystic.edit_text("📥 **Fetching via Custom API Server...**")
+        file_path = await download_song(link)
+        
+        if file_path:
+            return file_path
+        
+        await mystic.edit_text("❌ **API Download Failed.**")
         return None
-            
+        
